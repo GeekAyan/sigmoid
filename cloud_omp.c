@@ -1,0 +1,238 @@
+#include <tfhe/tfhe.h>
+#include <tfhe/tfhe_io.h>
+#include <stdio.h>
+#include <time.h>
+#include <omp.h>
+#define COUNT 14
+#define BLEN 32
+
+
+void compare_bit(LweSample* result, const LweSample* a, const LweSample* b, LweSample* lsb_carry, LweSample* tmp, const TFheGateBootstrappingCloudKeySet* bk) {
+    LweSample* temp1=new_gate_bootstrapping_ciphertext_array(1, bk->params);
+    LweSample* temp2=new_gate_bootstrapping_ciphertext_array(1, bk->params);
+    LweSample* temp3=new_gate_bootstrapping_ciphertext_array(1,bk->params);
+    LweSample* temp4=new_gate_bootstrapping_ciphertext_array(1,bk->params);
+    LweSample* temp5=new_gate_bootstrapping_ciphertext_array(1,bk->params);
+
+    bootsXOR(temp1, a, b, bk);  //a xorb
+    bootsXOR(result,temp1,lsb_carry,bk);  //a xor b xor ci
+    
+    bootsNOT(temp4,a,bk);  // complement of a
+    bootsAND(temp3,temp4,b,bk); // complement a and b
+
+    bootsNOT(temp5,temp1,bk);  // complement of a XOR b
+
+    bootsAND(temp2,temp5,lsb_carry,bk);// complement of a XOR b AND lasb_carry
+  
+    bootsOR(tmp,temp2,temp3,bk);       // a&b + ci*(a xor b)
+    bootsCOPY(lsb_carry,tmp,bk);
+}
+
+
+
+void subtract(LweSample* result, LweSample* tmps, const LweSample* a, const LweSample* b, const int nb_bits, const TFheGateBootstrappingCloudKeySet* bk) {
+    
+    
+
+    //run the elementary comparator gate n times//
+      
+  	for (int i=0; i<nb_bits; i++) {
+        compare_bit(&result[i], &a[i], &b[i], &tmps[0], &tmps[1], bk);
+        }
+}
+
+
+void Addition(LweSample* top1, const LweSample* a6, const LweSample* b6, LweSample* lsb_carry1, LweSample* tmp6, const 	TFheGateBootstrappingCloudKeySet* bk) {
+    LweSample* temp1=new_gate_bootstrapping_ciphertext_array(1, bk->params);
+    LweSample* temp2=new_gate_bootstrapping_ciphertext_array(1, bk->params);
+    LweSample* temp3=new_gate_bootstrapping_ciphertext_array(1,bk->params);
+    
+    bootsXOR(temp1, a6, b6, bk);  //a xor b  
+    bootsXOR(top1,temp1,lsb_carry1,bk);  //a xor b xor ci
+    bootsAND(temp2,temp1,lsb_carry1,bk);   //ci and (a xor b)
+    bootsAND(temp3,a6,b6,bk);             // a and b 
+    bootsOR(tmp6,temp2,temp3,bk);       // a&b + ci*(a xor b)
+    bootsCOPY(lsb_carry1,tmp6,bk);
+
+
+}
+void Adder(LweSample* top1, const LweSample* a6, const LweSample* b6, const int nb_bits, const TFheGateBootstrappingCloudKeySet* bk)
+   {
+     LweSample* tmps6 = new_gate_bootstrapping_ciphertext_array(2, bk->params);
+     bootsCONSTANT(&tmps6[0], 0, bk); //initialize carry to 0
+
+    //run the elementary comparator gate n times//
+        
+    for (int i=0; i<nb_bits; i++){
+        Addition(&top1[i], &a6[i], &b6[i], &tmps6[0], &tmps6[1], bk);
+        }
+     delete_gate_bootstrapping_ciphertext_array(2, tmps6);    
+   }
+
+void multiplexer(LweSample* rdbdata,LweSample* a,LweSample* b,LweSample* select_line,const int nb_bit, const TFheGateBootstrappingCloudKeySet* bk)
+  {
+      int m=0;
+      for(int i=0;i<nb_bit;i++){
+        bootsMUX(&rdbdata[i],&select_line[m],&b[i],&a[i],bk);
+        }
+  }
+
+  
+
+
+struct ciphertext
+ {
+  LweSample* ciphertext1;
+  LweSample* ciphertext2;
+ };
+struct ciphertext ciphertext[COUNT];
+int main() {
+    double start_time =  omp_get_wtime();
+    printf("Reading the key...\n");
+
+    //reads the cloud key from file
+    FILE* cloud_key = fopen("cloud.key","rb");
+    TFheGateBootstrappingCloudKeySet* bk = new_tfheGateBootstrappingCloudKeySet_fromFile(cloud_key);
+    fclose(cloud_key);
+ 
+    //if necessary, the params are inside the key
+    const TFheGateBootstrappingParameterSet* params = bk->params;
+
+    printf("Reading the ciphertexts...\n");
+   
+     
+	// initialize cloud ciphertext//
+	for(int i=0;i<COUNT;i++)
+	{
+	ciphertext[i].ciphertext1=new_gate_bootstrapping_ciphertext_array(BLEN,params);
+	ciphertext[i].ciphertext2=new_gate_bootstrapping_ciphertext_array(BLEN,params);
+	}
+   	//read the ciphertexts from the cloud file//
+     FILE* cloud_data = fopen("cloud.data","rb");
+    	for (int k=0;k<COUNT;k++){
+			for (int n=0;n<BLEN;n++){
+			import_gate_bootstrapping_ciphertext_fromFile(cloud_data, &ciphertext[k].ciphertext1[n], params);
+			import_gate_bootstrapping_ciphertext_fromFile(cloud_data, &ciphertext[k].ciphertext2[n], params);
+			}
+    	}
+     fclose(cloud_data);
+    
+    printf("Reading the query data...\n");
+    printf("Executing....");
+	//read the ciphertexts from the query file//
+    LweSample* ciphertext_input = new_gate_bootstrapping_ciphertext_array(BLEN, params);
+     
+    FILE* query_data = fopen("query.data","rb");
+    for (int i=0; i<BLEN; i++) {
+        import_gate_bootstrapping_ciphertext_fromFile(query_data, &ciphertext_input[i], params);
+    }
+    fclose(query_data);
+    
+    
+    
+     
+    
+    LweSample* f_result= new_gate_bootstrapping_ciphertext_array(BLEN,params);
+    LweSample* res_tmp= new_gate_bootstrapping_ciphertext_array(BLEN,params);
+	
+    
+// initialize the result flags // 
+	 for(int i=0;i<BLEN;i++){
+       		
+			bootsCONSTANT(&res_tmp[i],0,bk);
+			
+			}
+	
+        
+omp_lock_t writelock;
+	omp_init_lock(&writelock);
+// equality check//
+	#pragma omp parallel for shared(res_tmp,f_result)
+	for(int i=0;i<COUNT;i++){
+	LweSample* result_val =  new_gate_bootstrapping_ciphertext_array(BLEN, params); 
+	LweSample* result = new_gate_bootstrapping_ciphertext_array(BLEN, params);
+    LweSample* result1 = new_gate_bootstrapping_ciphertext_array(BLEN, params);
+	LweSample* ans= new_gate_bootstrapping_ciphertext_array(1,params);
+    LweSample* complement = new_gate_bootstrapping_ciphertext_array(1,params);
+	LweSample* enc_th= new_gate_bootstrapping_ciphertext_array(BLEN,params);
+	LweSample* signbit = new_gate_bootstrapping_ciphertext_array(2, params);
+    LweSample* signbit1= new_gate_bootstrapping_ciphertext_array(2, params);
+	bootsCONSTANT(&signbit[0], 0, bk); //initialize the carry to 0
+	bootsCONSTANT(&signbit1[0], 0, bk); //initialize the carry to 0
+	for(int i=0;i<BLEN;i++){
+       		bootsCONSTANT(&enc_th[i],0,bk);
+			}
+        subtract(result,signbit, ciphertext[i].ciphertext1, ciphertext_input,BLEN,bk);
+		subtract(result1,signbit1,ciphertext_input,ciphertext[i].ciphertext1,BLEN,bk); 
+        bootsOR(ans,signbit,signbit1,bk);
+        bootsNOT(complement,ans,bk);
+	//Select only the valid result//
+        multiplexer(result_val,enc_th,ciphertext[i].ciphertext2,complement,BLEN,bk);
+	omp_set_lock(&writelock);	
+	//Add the valid result to final result//
+	Adder(f_result,result_val,res_tmp,BLEN,bk);
+	//Change the result temp to final result//
+	 
+	for(int j=0;j<BLEN;j++){ 
+	bootsCOPY(&res_tmp[j],&f_result[j],bk);
+	}
+	omp_unset_lock(&writelock);
+	}
+	
+	omp_destroy_lock(&writelock);
+	//decrypt and rebuild the answer
+	/*FILE* secret_key = fopen("secret.key","rb");
+      TFheGateBootstrappingSecretKeySet* key = new_tfheGateBootstrappingSecretKeySet_fromFile(secret_key);
+      fclose(secret_key);
+      int32_t int_answer=0;
+      //int32_t int_answer1=0;
+
+        for(int i=0; i<BLEN; i++){
+            int ai = bootsSymDecrypt(&f_result[i], key)>0;
+            int_answer |= (ai<<i);
+     // int aj = bootsSymDecrypt(&remainder[i], key)>0;
+            //int_answer1 |= (aj<<i);
+        }
+  float res=int_answer/100000.0;
+        //printf("\n The 10th index : %d and digit : %d \n", int_answer,int_answer1);
+        printf("The result: %f", res);
+		*/
+  //decrypt//
+
+          
+
+    //printf("......computation of the 16 binary + 32 mux gates took: %ld microsecs\n",end_time-start_time);
+
+    //export the answer to a file (for the cloud)
+  	FILE* answer_data = fopen("answer.data","wb");
+     	for(int n=0;n<BLEN;n++){
+     	 export_gate_bootstrapping_ciphertext_toFile(answer_data, &f_result[n],params);
+     	 }
+	
+	
+
+    	fclose(answer_data);
+
+    //clean up all pointers
+    for(int i=0;i<COUNT;i++)
+	{
+     	delete_gate_bootstrapping_ciphertext_array(BLEN,ciphertext[i].ciphertext1);
+     	delete_gate_bootstrapping_ciphertext_array(BLEN,ciphertext[i].ciphertext2);
+	}
+  delete_gate_bootstrapping_ciphertext_array(BLEN,ciphertext_input);
+  //delete_gate_bootstrapping_ciphertext_array(2, signbit);
+ // delete_gate_bootstrapping_ciphertext_array(2, signbit1);
+ // delete_gate_bootstrapping_ciphertext_array(BLEN, result);
+//delete_gate_bootstrapping_ciphertext_array(BLEN, result1);
+	delete_gate_bootstrapping_ciphertext_array(BLEN, f_result);
+  
+	//delete_gate_bootstrapping_ciphertext_array(BLEN, result_val);
+	//delete_gate_bootstrapping_ciphertext_array(1, complement);
+	//delete_gate_bootstrapping_ciphertext_array(1, ans);
+  delete_gate_bootstrapping_cloud_keyset(bk);
+
+double end_time =  omp_get_wtime();
+printf("\nResult is stored in cloud answer file! Time to execute %.0f second\n",end_time-start_time);	
+return 0;
+
+}
